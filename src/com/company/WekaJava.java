@@ -4,6 +4,7 @@ import weka.classifiers.Classifier;
 import weka.classifiers.Evaluation;
 import weka.classifiers.bayes.NaiveBayes;
 import weka.classifiers.trees.Id3;
+import weka.classifiers.trees.J48;
 import weka.core.Instance;
 import weka.core.Instances;
 import weka.core.converters.CSVLoader;
@@ -23,10 +24,12 @@ public class WekaJava {
     private Instances data;
     private Classifier model;
 
+    public static final String names[] = {"Naive Bayes","ID3 Weka","J48 Weka","CustomID3","CustomC45"};
     public static final int NAIVE_BAYES = 0;
     public static final int ID3 = 1;
-    public static final int CUSTOM_ID3 = 2;
-    public static final int CUSTOM_C45 = 3;
+    public static final int J48 = 2;
+    public static final int CUSTOM_ID3 = 3;
+    public static final int CUSTOM_C45 = 4;
 
     public WekaJava() {
         data = null;
@@ -61,12 +64,12 @@ public class WekaJava {
         data = Filter.useFilter(data, resample);
     }
 
-    public void testModel(Instances datatest) throws Exception {
+    public void testModel() throws Exception {
         Evaluation eval = new Evaluation(data);
-        eval.evaluateModel(model, datatest);
+        eval.evaluateModel(model, data);
 
         System.out
-                .println(eval.toSummaryString("=== Summary ===\n", false));
+                .println(eval.toSummaryString("=== Test Evaluation ===\n", false));
         System.out.println(eval.toClassDetailsString());
         System.out.println(eval.toMatrixString());
     }
@@ -76,7 +79,7 @@ public class WekaJava {
         eval.crossValidateModel(model, data,
                 10, new Random(1));
         System.out
-                .println(eval.toSummaryString("=== Summary ===\n", false));
+                .println(eval.toSummaryString("=== 10-fold cross validation ===\n", false));
         System.out.println(eval.toClassDetailsString());
         System.out.println(eval.toMatrixString());
     }
@@ -96,7 +99,7 @@ public class WekaJava {
             eval.evaluateModel(model, testSet);
 
             System.out
-                    .println(eval.toSummaryString("=== Summary ===\n", false));
+                    .println(eval.toSummaryString("=== percentage split "+percentage+"% ===\n", false));
             System.out.println(eval.toClassDetailsString());
             System.out.println(eval.toMatrixString());
         } catch (Exception e) {
@@ -113,9 +116,12 @@ public class WekaJava {
                 model = new Id3();
                 break;
             case 2 :
-                model = new CustomID3();
+                model = new J48();
                 break;
             case 3 :
+                model = new CustomID3();
+                break;
+            case 4 :
                 model = new CustomC45();
                 break;    
             default:
@@ -124,9 +130,9 @@ public class WekaJava {
         model.buildClassifier(data);
     }
 
-    public void saveModel() throws Exception {
+    public void saveModel(String file) throws Exception {
         if (model != null) {
-            weka.core.SerializationHelper.write("weka.model", model);
+            weka.core.SerializationHelper.write(file, model);
         }
         else {
             System.out.println("Model is null");

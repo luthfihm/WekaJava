@@ -1,17 +1,14 @@
 package com.company;
 
-import java.util.Enumeration;
-import java.util.HashSet;
-import java.util.List;
 import weka.classifiers.Classifier;
 import weka.core.Attribute;
 import weka.core.Capabilities;
 import weka.core.Instance;
 import weka.core.Instances;
-import weka.core.NoSupportForMissingValuesException;
-import weka.filters.Filter;
-import weka.filters.unsupervised.attribute.Add;
-import weka.filters.unsupervised.attribute.Remove;
+import weka.core.Utils;
+
+import java.util.Enumeration;
+import weka.core.AttributeStats;
 
 /**
  *
@@ -20,48 +17,46 @@ import weka.filters.unsupervised.attribute.Remove;
 
 public class CustomC45 extends Classifier {
 
-    private final double MISSING_VALUE = Double.NaN;
-    private final double DOUBLE_COMPARE_VALUE = 1e-6;
-    private List<Rule> ruleList;
+    Instances instances;
+    /**
+     * for serialization
+     */
+    static final long serialVersionUID = -2693678647096322561L;
 
     /**
-     * The node's children.
+     * The node's successors.
      */
-    private CustomC45[] m_Children;
+    private CustomC45[] child;
 
     /**
      * Attribute used for splitting.
      */
-    private Attribute m_Attribute;
+    private Attribute split_attribute;
 
     /**
-     * Class value if node is leaf.
+     * Index of class value if node is leaf.
      */
-    private double m_Label;
+    public int leaf_class_idx;
 
     /**
      * Class distribution if node is leaf.
      */
-    private double[] m_ClassDistribution;
+    private double[] leaf_distribution;
 
     /**
      * Class attribute of dataset.
      */
-    private Attribute m_ClassAttribute;
+    private Attribute class_attribute;
 
-    /**
-     * Returns default capabilities of the classifier.
-     *
-     * @return the capabilities of this classifier
-     */
     @Override
     public Capabilities getCapabilities() {
-        Capabilities result = super.getCapabilities();
+        Capabilities result = new Capabilities(this);
         result.disableAll();
 
         // attributes
         result.enable(Capabilities.Capability.NOMINAL_ATTRIBUTES);
         result.enable(Capabilities.Capability.NUMERIC_ATTRIBUTES);
+        result.enable(Capabilities.Capability.MISSING_VALUES);
 
         // class
         result.enable(Capabilities.Capability.NOMINAL_CLASS);
@@ -73,594 +68,426 @@ public class CustomC45 extends Classifier {
         return result;
     }
 
-    /**
-     * Builds CustomC45 tree classifier.
-     *
-     * @param data the training data
-     * @exception Exception if classifier failed to build
-     */
     @Override
     public void buildClassifier(Instances data) throws Exception {
 
-        // Periksa data
+        // can classifier handle the data?
         getCapabilities().testWithFail(data);
 
-        // Hapus instances dengan missing class
-        data = new Instances(data);
-        data.deleteWithMissingClass();
+        // handling missing value
+        Instances noMissingValueData = handleMissingValue(data);
 
-        makePrunedTree(data);
-    }
-
-    private void makePrunedTree(Instances data) throws Exception {
-        makeTree(data);
-        convertToRule();
-        pruneTree(data);
-    }
-    
-    /**
-     * Creates an CustomC45 tree.
-     *
-     * @param data the training data
-     * @exception Exception if tree failed to build
-     */
-    private void makeTree(Instances data) throws Exception {
-
-        // Periksa instans dalam node
-        if (data.numInstances() == 0) {
-            m_Attribute = null;
-            m_Label = MISSING_VALUE;
-            m_ClassDistribution = new double[data.numClasses()];
-        } else {
-            // Cari IG maksimum
-            double[] gainRatios = new double[data.numAttributes()];
-
-            data = toNominalInstances(data);
-
-            Enumeration attEnum = data.enumerateAttributes();
-            while (attEnum.hasMoreElements()) {
-                Attribute att = (Attribute) attEnum.nextElement();
-                gainRatios[att.index()] = computeGainRatio(data, att);
-            }
-
-            m_Attribute = data.attribute(maxIndex(gainRatios));
-
-            // Membuat daun jika IG = 0
-            if (doubleEqual(gainRatios[m_Attribute.index()], 0)) {
-                m_Attribute = null;
-
-                m_ClassDistribution = new double[data.numClasses()];
-                for (int i = 0; i < data.numInstances(); i++) {
-                    Instance inst = (Instance) data.instance(i);
-                    m_ClassDistribution[(int) inst.classValue()]++;
-                }
-
-                normalizeDouble(m_ClassDistribution);
-                m_Label = maxIndex(m_ClassDistribution);
-                m_ClassAttribute = data.classAttribute();
-            } else {
-                // Membuat pohon baru di bawah node
-                Instances[] splitData = splitData(data, m_Attribute);
-                m_Children = new CustomC45[m_Attribute.numValues()];
-                for (int j = 0; j < m_Attribute.numValues(); j++) {
-                    m_Children[j] = new CustomC45();
-                    m_Children[j].makeTree(splitData[j]);
-                }
-            }
+        for (int i = 0; i < noMissingValueData.numInstances(); i++) {
+            System.out.println(noMissingValueData.instance(i).toString());
         }
+        makeTree(noMissingValueData);
     }
-    
-    /**
-     * Use the list of rule to prune the created tree
-     */
-    private void pruneTree(Instances data) {
-        
+
+    public int maxAttr(Instances data, Attribute atr) throws Exception {
+        int[] maxval = new int[atr.numValues()];
+        for (int i = 0; i < data.numInstances(); i++) {
+            Instance temp = data.instance(i);
+            maxval[(int) temp.classValue()]++;
+        }
+        return Utils.maxIndex(maxval);
     }
-    
-    /**
-     * Convert Tree to List of Rule
-     */
-    private void convertToRule() {
-        
-    }
-    
-    /**
-     * Convert Instances with numeric attributes to nominal attributes
-     *
-     * @param data the data to be converted
-     * @return Instances with nominal attributes
-     */
-    private Instances toNominalInstances(Instances data) throws Exception {
-        for (int ix = 0; ix < data.numAttributes(); ++ix) {
-            Attribute att = data.attribute(ix);
-            if (data.attribute(ix).isNumeric()) {
 
-                // Get an array of integer that consists of distinct values of the attribute
-                HashSet<Double> numericSet = new HashSet<Double>();
-                for (int i = 0; i < data.numInstances(); ++i) {
-                    numericSet.add(data.instance(i).value(att));
-                }
+    private Instances handleMissingValue(Instances _data) {
 
-                Double[] numericValues = new Double[numericSet.size()];
-                int iterator = 0;
-                for (Double i : numericSet) {
-                    numericValues[iterator] = i;
-                    iterator++;
-                }
-
-                // Sort the array
-                sortArray(numericValues);
-
-                // Search for threshold and get new Instances
-                double[] infoGains = new double[numericValues.length - 1];
-                Instances[] tempInstances = new Instances[numericValues.length - 1];
-                for (int i = 0; i < numericValues.length - 1; ++i) {
-                    tempInstances[i] = convertInstances(data, att, numericValues[i]);
-                    try {
-                        infoGains[i] = computeGainRatio(tempInstances[i], tempInstances[i].attribute(att.name()));
-                    } catch (Exception e) {
+        Instances data = _data;
+        Enumeration attrEnum = data.enumerateAttributes();
+        while (attrEnum.hasMoreElements()) {
+            Attribute attr = (Attribute) attrEnum.nextElement();
+            //Handling nominal, just assign it with majority value
+            if (attr.isNominal()) {
+                AttributeStats attributeStats = data.attributeStats(attr.index());
+                int maxIndex = 0;
+                for (int i = 1; i < attr.numValues(); i++) {
+                    if (attributeStats.nominalCounts[maxIndex] < attributeStats.nominalCounts[i]) {
+                        maxIndex = i;
                     }
                 }
-
-                data = new Instances(tempInstances[maxIndex(infoGains)]);
+                for (int i = 0; i < data.numInstances(); i++) {
+                    Instance instance = (Instance) data.instance(i);
+                    if (instance.isMissing(attr.index())) {
+                        System.out.println("Yes");
+                        instance.setValue(attr.index(), maxIndex);
+                    }
+                }
+            } //Handling numeric, just assign it with mean of attribute's instances
+            else if (attr.isNumeric()) {
+                AttributeStats attributeStats = data.attributeStats(attr.index());
+                double mean = attributeStats.numericStats.mean;
+                if (Double.isNaN(mean)) {
+                    mean = 0;
+                }
+                for (int i = 0; i < data.numInstances(); i++) {
+                    Instance instance = (Instance) data.instance(i);
+                    if (instance.isMissing(attr.index())) {
+                        instance.setValue(attr.index(), (int) mean);
+                    }
+                }
             }
         }
         return data;
     }
 
-    /**
-     * Convert all instances attribute type and values into nominal
-     *
-     * @param data the data to be converted
-     * @param att attribute to be changed to nominal
-     * @param threshold the threshold for attribute value
-     * @return Instances with all converted values
-     */
-    private static Instances convertInstances(Instances data, Attribute att, double threshold) throws Exception {
-        Instances newData = new Instances(data);
+    private Instance handleMissingValue(Instance _data) {
 
-        // Add attribute        
-        try {
-            Add filter = new Add();
-            filter.setAttributeIndex((att.index() + 2) + "");
-            filter.setNominalLabels("<=" + threshold + ",>" + threshold);
-            filter.setAttributeName(att.name() + "temp");
-            filter.setInputFormat(newData);
-            newData = Filter.useFilter(newData, filter);
-        } catch (Exception e) {
-            e.printStackTrace();
+        Instance instance = _data;
+        Instances data = instances;
+        Enumeration attrEnum = data.enumerateAttributes();
+        while (attrEnum.hasMoreElements()) {
+            Attribute attr = (Attribute) attrEnum.nextElement();
+            //Handling nominal, just assign it with majority value
+            if (attr.isNominal()) {
+                AttributeStats attributeStats = data.attributeStats(attr.index());
+                int maxIndex = 0;
+                for (int i = 1; i < attr.numValues(); i++) {
+                    if (attributeStats.nominalCounts[maxIndex] < attributeStats.nominalCounts[i]) {
+                        maxIndex = i;
+                    }
+                }
+                if (instance.isMissing(attr.index())) {
+                    System.out.println("Yes");
+                    instance.setValue(attr.index(), maxIndex);
+                }
+            } //Handling numeric, just assign it with mean of attribute's instances
+            else if (attr.isNumeric()) {
+                AttributeStats attributeStats = data.attributeStats(attr.index());
+                double mean = attributeStats.numericStats.mean;
+                if (Double.isNaN(mean)) {
+                    mean = 0;
+                }
+                if (instance.isMissing(attr.index())) {
+                    instance.setValue(attr.index(), (int) mean);
+                }
+            }
+        }
+        return instance;
+    }
+
+    private void makeTree(Instances data) throws Exception {
+        // Check if no instances have reached this node.
+        instances = data;
+        if (data.numInstances() == 0) {
+            split_attribute = null;
+            leaf_class_idx = -1;
+            leaf_distribution = new double[data.numClasses()];
+            return;
         }
 
-        for (int i = 0; i < newData.numInstances(); ++i) {
-            if ((double) newData.instance(i).value(newData.attribute(att.name())) <= threshold) {
-                newData.instance(i).setValue(newData.attribute(att.name() + "temp"), "<=" + threshold);
+        // Compute attribute with maximum gain ratio
+        double[] gainRatio = new double[data.numAttributes()];
+        Enumeration attEnum = data.enumerateAttributes();
+        while (attEnum.hasMoreElements()) {
+            Attribute att = (Attribute) attEnum.nextElement();
+            if (att.isNominal()) {
+                gainRatio[att.index()] = computeGainRatio(data, att);
+            } else if (att.isNumeric()) {
+                gainRatio[att.index()] = computeGainRatio(data, att, getOptimumThreshold(data, att));
+            }
+        }
+        // Make leaf if gain ratio is zero.
+        // Otherwise create successors.
+        if (Utils.eq(gainRatio[Utils.maxIndex(gainRatio)], 0)) {
+            split_attribute = null;
+            leaf_distribution = new double[data.numClasses()];
+            Enumeration instEnum = data.enumerateInstances();
+            while (instEnum.hasMoreElements()) {
+                Instance inst = (Instance) instEnum.nextElement();
+                leaf_distribution[(int) inst.classValue()]++;
+            }
+            Utils.normalize(leaf_distribution);
+            leaf_class_idx = Utils.maxIndex(leaf_distribution);
+            class_attribute = data.classAttribute();
+        } else {
+            split_attribute = data.attribute(Utils.maxIndex(gainRatio));
+            Instances[] splitData;
+            int numChild;
+            if (split_attribute.isNominal()) {
+                numChild = split_attribute.numValues();
+                splitData = splitData(data, split_attribute);
             } else {
-                newData.instance(i).setValue(newData.attribute(att.name() + "temp"), ">" + threshold);
+                numChild = 2;
+                splitData = splitData(data, split_attribute, getOptimumThreshold(data, split_attribute));
             }
-        }
-
-        Remove remove = new Remove();
-        remove.setAttributeIndices((att.index() + 1) + "");
-        remove.setInputFormat(newData);
-        Instances finalData = Filter.useFilter(newData, remove);
-        finalData.renameAttribute(finalData.attribute(att.name() + "temp"), att.name());
-
-        return finalData;
-    }
-
-    /**
-     * Sort an array of integer using bubble sort algorithm
-     *
-     * @param arr the array to be sorted
-     */
-    private static void sortArray(Double[] arr) {
-        double temp;
-        for (int i = 0; i < arr.length - 1; i++) {
-            for (int j = 1; j < arr.length - i; j++) {
-                if (arr[j - 1] > arr[j]) {
-                    temp = arr[j - 1];
-                    arr[j - 1] = arr[j];
-                    arr[j] = temp;
+            child = new CustomC45[numChild];
+            for (int j = 0; j < numChild; j++) {
+                child[j] = new CustomC45();
+                child[j].makeTree(splitData[j]);
+                if (Utils.eq(splitData[j].numInstances(), 0)) {
+                    child[j].leaf_class_idx = maxAttr(data, data.classAttribute());
                 }
             }
-        }
-    }
 
-    /**
-     * Normalize the values in array of double
-     *
-     * @param array the array of double
-     */
-    private void normalizeDouble(double[] array) {
-        double sum = 0;
-        for (double d : array) {
-            sum += d;
-        }
-
-        if (!Double.isNaN(sum) && sum != 0) {
-            for (int i = 0; i < array.length; ++i) {
-                array[i] /= sum;
-            }
-        } else {
-            // Do nothing       
-        }
-    }
-
-    /**
-     * Check whether two double values are the same
-     *
-     * @param d1 the first double value
-     * @param d2 the second double value
-     * @return true if the values are the same, false if not
-     */
-    private boolean doubleEqual(double d1, double d2) {
-        return (d1 == d2) || Math.abs(d1 - d2) < DOUBLE_COMPARE_VALUE;
-    }
-
-    /**
-     * Search for index with largest value from array of double
-     *
-     * @param array the array of double
-     * @return index of array with maximum value
-     */
-    private static int maxIndex(double[] array) {
-        double max = 0;
-        int index = 0;
-
-        if (array.length > 0) {
-            for (int i = 0; i < array.length; ++i) {
-                if (array[i] > max) {
-                    max = array[i];
-                    index = i;
+            for (int i = 0; i < numChild; i++) {
+                if (child[i].leaf_class_idx != 0 && Utils.eq(child[i].leaf_class_idx, -999)) {
+                    double[] classDistribution = new double[data.numClasses()];
+                    Enumeration instanceEnum = data.enumerateInstances();
+                    while (instanceEnum.hasMoreElements()) {
+                        Instance instance = (Instance) instanceEnum.nextElement();
+                        classDistribution[(int) instance.classValue()]++;
+                    }
+                    Utils.normalize(classDistribution);
+                    child[i].leaf_class_idx = Utils.maxIndex(classDistribution);
+                    child[i].leaf_distribution = classDistribution;
                 }
             }
-            return index;
-        } else {
-            return -1;
+            pruneTree();
         }
     }
 
-    /**
-     * Classifies a given test instance using the decision tree.
-     *
-     * @param instance the instance to be classified
-     * @return the classification
-     * @throws NoSupportForMissingValuesException if instance has missing values
-     */
     @Override
     public double classifyInstance(Instance instance)
-        throws NoSupportForMissingValuesException {
+            throws Exception {
 
         if (instance.hasMissingValue()) {
-            throw new NoSupportForMissingValuesException("CustomC45: Cannot handle missing values");
+            throw new Exception("This will never happens, sure");
         }
-        if (m_Attribute == null) {
-            return m_Label;
-        } else {
-            boolean isComparison = false;
-            Enumeration enumeration = m_Attribute.enumerateValues();
-            String val = null;
-            while (enumeration.hasMoreElements()) {
-                val = (String) enumeration.nextElement();
-                if (val.contains("<")) {
-                    isComparison = true;
-                    break;
-                }
-            }
-
-            if (isComparison) {
-                double threshold = getThreshold(val);
-                double instanceValue = (double) instance.value(m_Attribute);
-
-                if (instanceValue <= threshold) {
-                    instance.setValue(m_Attribute, "<=" + String.valueOf(threshold));
+        if (split_attribute == null) {
+            {
+                if (!Utils.eq(leaf_class_idx, Double.NaN)) {
+                    return leaf_class_idx;
                 } else {
-                    instance.setValue(m_Attribute, ">" + String.valueOf(threshold));
+                    Enumeration a = instance.enumerateAttributes();
+                    return instance.value(class_attribute);
                 }
             }
-            return m_Children[(int) instance.value(m_Attribute)].
-                classifyInstance(instance);
+        } else {
+            if (split_attribute.isNumeric()) {
+                int numericAttrIdx = -1;
+                if (instance.value(split_attribute) > getOptimumThreshold(instances, split_attribute)) {
+                    numericAttrIdx = 1;
+                } else {
+                    numericAttrIdx = 0;
+                }
+                return child[(int) numericAttrIdx].
+                        classifyInstance(instance);
+            } else if (split_attribute.isNominal()) {
+                return child[(int) instance.value(split_attribute)].
+                        classifyInstance(instance);
+            } else {
+                throw new Exception("This will never happens, sure");
+            }
         }
     }
 
-    /**
-     * Parse a string of value to get its threshold e.g. "<=24" means the
-     * threshold is 24
-     *
-     * @param val the string to be parsed
-     * @return the threshold parsed from the string
-     */
-    private double getThreshold(String val) {
-        return Double.parseDouble(val.replace("<=", ""));
-    }
-
-    /**
-     * Computes class distribution for instance using decision tree.
-     *
-     * @param instance the instance for which distribution is to be computed
-     * @return the class distribution for the given instance
-     * @throws NoSupportForMissingValuesException if instance has missing values
-     */
     @Override
     public double[] distributionForInstance(Instance instance)
-        throws NoSupportForMissingValuesException {
-
-        if (instance.hasMissingValue()) {
-            throw new NoSupportForMissingValuesException("CustomC45: Cannot handle missing values");
-        }
-        if (m_Attribute == null) {
-            return m_ClassDistribution;
+            throws Exception {
+        System.out.println("Instance = " + instance.toString());
+        if (split_attribute != null) {
+            double split_attribute_idx = 0;
+            if (split_attribute.isNominal()) {
+                split_attribute_idx = instance.value(split_attribute);
+                if (Double.isNaN(split_attribute_idx)) {
+                    Instances[] instancesSplitted = splitData(instances, split_attribute);
+                    int largestNumIdx = -1;
+                    int cnt = 0;
+                    for (int i = 0; i < instancesSplitted.length; ++i) {
+                        int tmp = instancesSplitted[i].numInstances();
+                        if (tmp > cnt) {
+                            largestNumIdx = i;
+                        }
+                    }
+                    split_attribute_idx = largestNumIdx;
+                }
+                if (split_attribute_idx == -1) {
+                    throw new Exception("This will never happens, sure");
+                }
+            } else if (split_attribute.isNumeric()) {
+                double val = instance.value(split_attribute);
+                if (Double.isNaN(val)) {
+                    instance = handleMissingValue(instance);
+                    System.out.println(val);
+                    System.out.println(instance.toString());
+                    val = instance.value(split_attribute);
+                }
+                //manual classifying
+                if (val >= getOptimumThreshold(instances, split_attribute)) {
+                    split_attribute_idx = 1;
+                } else {
+                    split_attribute_idx = 0;
+                }
+            }
+            if (child.length > 0) {
+                return child[(int) split_attribute_idx].distributionForInstance(instance);
+            }
+            if (leaf_distribution != null) {
+                return leaf_distribution;
+            } else {
+                System.out.println("Halo sayang");
+            }
         } else {
-            return m_Children[(int) instance.value(m_Attribute)].
-                distributionForInstance(instance);
+            return leaf_distribution;
+        }
+        if (leaf_distribution != null) {
+            return leaf_distribution;
+        } else {
+            return null;
         }
     }
 
-    /**
-     * Prints the decision tree using the private toString method from below.
-     *
-     * @return a textual description of the classifier
-     */
-    @Override
-    public String toString() {
+    public double computeGainRatio(Instances data, Attribute attr) throws Exception {
 
-        if ((m_ClassDistribution == null) && (m_Children == null)) {
-            return "CustomC45: No model built yet.";
-        }
-        return "CustomC45\n\n" + toString(0);
-    }
-
-    /**
-     * Computes Gain Ratio for an attribute.
-     *
-     * @param data the data for which gain ratio is to be computed
-     * @param att the attribute
-     * @return the gain ratio for the given attribute and data
-     * @throws Exception if computation fails
-     */
-    private static double computeGainRatio(Instances data, Attribute att)
-        throws Exception {
-
-        double infoGain = computeInfoGain(data, att);
-        double splitInfo = computeSplitInformation(data, att);
-        return infoGain > 0 ? infoGain / splitInfo : infoGain;
-    }
-
-    /**
-     * Computes information gain for an attribute.
-     *
-     * @param data the data for which info gain is to be computed
-     * @param att the attribute
-     * @return the information gain for the given attribute and data
-     * @throws Exception if computation fails
-     */
-    private static double computeInfoGain(Instances data, Attribute att)
-        throws Exception {
-
-        double infoGain = computeEntropy(data);
-        Instances[] splitData = splitData(data, att);
-        for (Instances splitdata : splitData) {
-            if (splitdata.numInstances() > 0) {
-                double splitNumInstances = splitdata.numInstances();
-                double dataNumInstances = data.numInstances();
-                double proportion = splitNumInstances / dataNumInstances;
-                infoGain -= proportion * computeEntropy(splitdata);
+        double infoGain = 0.0;
+        Instances[] splitData = this.splitData(data, attr);
+        infoGain = computeEntropy(data);
+        for (int i = 0; i < attr.numValues(); i++) {
+            if (splitData[i].numInstances() > 0) {
+                infoGain -= (double) splitData[i].numInstances()
+                        / (double) data.numInstances() * computeEntropy(splitData[i]);
             }
         }
         return infoGain;
     }
 
-    /**
-     * Computes the entropy of a dataset.
-     *
-     * @param data the data for which entropy is to be computed
-     * @return the entropy of the data class distribution
-     * @throws Exception if computation fails
-     */
-    private static double computeEntropy(Instances data) throws Exception {
+    public double computeGainRatio(Instances data, Attribute attr, double threshold) throws Exception {
 
-        double[] labelCounts = new double[data.numClasses()];
-        for (int i = 0; i < data.numInstances(); ++i) {
-            labelCounts[(int) data.instance(i).classValue()]++;
-        }
-
-        double entropy = 0;
-        for (int i = 0; i < labelCounts.length; i++) {
-            if (labelCounts[i] > 0) {
-                double proportion = labelCounts[i] / data.numInstances();
-                entropy -= (proportion) * log2(proportion);
+        double infoGain = 0.0;
+        Instances[] splitData = splitData(data, attr, threshold);
+        infoGain = computeEntropy(data);
+        for (int i = 0; i < 2; i++) {
+            if (splitData[i].numInstances() > 0) {
+                infoGain = infoGain - (double) splitData[i].numInstances()
+                        / (double) data.numInstances() * computeEntropy(splitData[i]);
             }
         }
+        return infoGain;
+    }
+
+    public Instances[] splitData(Instances data, Attribute attr, double threshold) throws Exception {
+        Instances[] splitedData = new Instances[2];
+        for (int i = 0; i < 2; i++) {
+            splitedData[i] = new Instances(data, data.numInstances()); // initialize with data template and max capacity
+        }
+
+        Enumeration instanceIterator = data.enumerateInstances();
+        while (instanceIterator.hasMoreElements()) {
+            Instance instance = (Instance) instanceIterator.nextElement();
+            if (instance.value(attr) >= threshold) {
+                splitedData[1].add(instance);
+            } else {
+                splitedData[0].add(instance);
+            }
+        }
+
+        for (Instances instances : splitedData) {
+            instances.compactify(); //WEKA said it so
+        }
+
+        return splitedData;
+    }
+
+    public Instances[] splitData(Instances data, Attribute attr) {
+
+        Instances[] splitedData = new Instances[attr.numValues()];
+        for (int i = 0; i < attr.numValues(); i++) {
+            splitedData[i] = new Instances(data, data.numInstances());
+        }
+
+        Enumeration instanceIterator = data.enumerateInstances();
+        while (instanceIterator.hasMoreElements()) {
+            Instance instance = (Instance) instanceIterator.nextElement();
+            splitedData[(int) instance.value(attr)].add(instance);
+        }
+
+        for (Instances instances : splitedData) {
+            instances.compactify(); //WEKA said it so, for the sake of optimizing
+        }
+
+        return splitedData;
+    }
+
+    public double computeEntropy(Instances data) {
+        // This fucking validation is a must
+        if (data.numInstances() == 0) {
+            return 0.0;
+        }
+
+        double[] classCounts = new double[data.numClasses()];
+        Enumeration instanceIterator = data.enumerateInstances();
+        int totalInstance = 0;
+        while (instanceIterator.hasMoreElements()) {
+            Instance inst = (Instance) instanceIterator.nextElement();
+            classCounts[(int) inst.classValue()]++;
+            totalInstance++;
+        }
+        double entropy = 0;
+        for (int j = 0; j < data.numClasses(); j++) {
+            double fraction = classCounts[j] / totalInstance;
+            if (fraction != 0) {
+                entropy -= fraction * Utils.log2(fraction);
+            }
+        }
+
         return entropy;
     }
 
-    /**
-     * Computes Split information for an attribute.
-     *
-     * @param data the data for which split information is to be computed
-     * @param att the attribute
-     * @return the split information for the given attribute and data
-     * @throws Exception if computation fails
-     */
-    private static double computeSplitInformation(Instances data, Attribute att) throws Exception {
-
-        double splitInfo = 0;
-        Instances[] splitData = splitData(data, att);
-        double dataNumInstances = data.numInstances();
-
-        for (Instances splitdata : splitData) {
-            if (splitdata.numInstances() > 0) {
-                double splitNumInstances = splitdata.numInstances();
-                double proportion = splitNumInstances / dataNumInstances;
-                splitInfo -= proportion * log2(proportion);
+    private double getOptimumThreshold(Instances data, Attribute attribute) throws Exception {
+        double[] threshold = new double[data.numInstances()];
+        double[] gainRatio = new double[data.numInstances()];
+        for (int i = 0; i < data.numInstances() - 1; ++i) {
+            if (data.instance(i).classValue() != data.instance(i + 1).classValue()) {
+                threshold[i] = (data.instance(i).value(attribute) + data.instance(i + 1).value(attribute)) / 2;
+                gainRatio[i] = computeGainRatio(data, attribute, threshold[i]);
             }
         }
-        return splitInfo;
-    }
-
-    /**
-     * Count the logarithm value with base 2 of a number
-     *
-     * @param num number that will be counted
-     * @return logarithm value with base 2
-     */
-    private static double log2(double num) {
-        return (num == 0) ? 0 : Math.log(num) / Math.log(2);
-    }
-
-    /**
-     * split the dataset based on attribute
-     *
-     * @param data dataset used for splitting
-     * @param att attribute used to split the dataset
-     * @return
-     */
-    private static Instances[] splitData(Instances data, Attribute att) {
-
-        Instances[] splitData = new Instances[att.numValues()];
-        for (int j = 0; j < att.numValues(); j++) {
-            splitData[j] = new Instances(data, data.numInstances());
-        }
-
-        for (int i = 0; i < data.numInstances(); i++) {
-            splitData[(int) data.instance(i).value(att)].add(data.instance(i));
-        }
-
-        for (Instances splitData1 : splitData) {
-            splitData1.compactify();
-        }
-        return splitData;
-    }
-
-    /**
-     * Outputs a tree at a certain level.
-     *
-     * @param level the level at which the tree is to be printed
-     * @return the tree as string at the given level
-     */
-    private String toString(int level) {
-
-        StringBuilder text = new StringBuilder();
-
-        if (m_Attribute == null) {
-            if (Instance.isMissingValue(m_Label)) {
-                text.append(": null");
-            } else {
-                text.append(": ").append(m_ClassAttribute.value((int) m_Label));
-            }
-        } else {
-            for (int j = 0; j < m_Attribute.numValues(); j++) {
-                text.append("\n");
-                for (int i = 0; i < level; i++) {
-                    text.append("|  ");
-                }
-                text.append(m_Attribute.name()).append(" = ").append(m_Attribute.value(j));
-                text.append(m_Children[j].toString(level + 1));
-            }
-        }
-        return text.toString();
-    }
-
-    /**
-     * Adds this tree recursively to the buffer.
-     *
-     * @param id the unique id for the method
-     * @param buffer the buffer to add the source code to
-     * @return the last ID being used
-     * @throws Exception if something goes wrong
-     */
-    protected int toSource(int id, StringBuffer buffer) throws Exception {
-        int result;
-        int i;
-        int newID;
-        StringBuffer[] subBuffers;
-
-        buffer.append("\n");
-        buffer.append("  protected static double node").append(id).append("(Object[] i) {\n");
-
-        // leaf?
-        if (m_Attribute == null) {
-            result = id;
-            if (Double.isNaN(m_Label)) {
-                buffer.append("    return Double.NaN;");
-            } else {
-                buffer.append("    return ").append(m_Label).append(";");
-            }
-            if (m_ClassAttribute != null) {
-                buffer.append(" // ").append(m_ClassAttribute.value((int) m_Label));
-            }
-            buffer.append("\n");
-            buffer.append("  }\n");
-        } else {
-            buffer.append("    checkMissing(i, ").append(m_Attribute.index()).append(");\n\n");
-            buffer.append("    // ").append(m_Attribute.name()).append("\n");
-
-            // subtree calls
-            subBuffers = new StringBuffer[m_Attribute.numValues()];
-            newID = id;
-            for (i = 0; i < m_Attribute.numValues(); i++) {
-                newID++;
-
-                buffer.append("    ");
-                if (i > 0) {
-                    buffer.append("else ");
-                }
-                buffer.append("if (((String) i[").append(m_Attribute.index()).append("]).equals(\"").append(m_Attribute.value(i)).append("\"))\n");
-                buffer.append("      return node").append(newID).append("(i);\n");
-
-                subBuffers[i] = new StringBuffer();
-                newID = m_Children[i].toSource(newID, subBuffers[i]);
-            }
-            buffer.append("    else\n");
-            buffer.append("      throw new IllegalArgumentException(\"Value '\" + i[").append(m_Attribute.index()).append("] + \"' is not allowed!\");\n");
-            buffer.append("  }\n");
-
-            // output subtree code
-            for (i = 0; i < m_Attribute.numValues(); i++) {
-                buffer.append(subBuffers[i].toString());
-            }
-            subBuffers = null;
-
-            result = newID;
-        }
-
+        double result = (double) threshold[Utils.maxIndex(gainRatio)];
         return result;
     }
 
-    /**
-     * Returns a string that describes the classifier as source. The classifier
-     * will be contained in a class with the given name (there may be auxiliary
-     * classes), and will contain a method with the signature:
-     * <pre><code>
-     * public static double classify(Object[] i);
-     * </code></pre> where the array <code>i</code> contains elements that are
-     * either Double, String, with missing values represented as null. The
-     * generated code is public domain and comes with no warranty. <br/>
-     * Note: works only if class attribute is the last attribute in the dataset.
-     *
-     * @param className the name that should be given to the source class.
-     * @return the object source described by a string
-     * @throws Exception if the source can't be computed
-     */
-    public String toSource(String className) throws Exception {
-        StringBuffer result;
-        int id;
+    public double computeError(Instances instances) throws Exception {
+        int correctInstances = 0;
+        int incorrectInstances = 0;
+        Enumeration enumeration = instances.enumerateInstances();
+        while (enumeration.hasMoreElements()) {
+            Instance instance = (Instance) enumeration.nextElement();
+            if (instance.classValue() == classifyInstance(instance)) {
+                correctInstances++;
+            } else {
+                incorrectInstances++;
+            }
+        }
+        return (double) incorrectInstances / (double) (incorrectInstances + correctInstances);
+    }
 
-        result = new StringBuffer();
+    private void pruneTree() throws Exception {
+        //Prepruning, prune before its too late, beybeh
+        if (child != null) {
+            double beforePruningError = this.computeError(instances);
 
-        result.append("class ").append(className).append(" {\n");
-        result.append("  private static void checkMissing(Object[] i, int index) {\n");
-        result.append("    if (i[index] == null)\n");
-        result.append("      throw new IllegalArgumentException(\"Null values "
-            + "are not allowed!\");\n");
-        result.append("  }\n\n");
-        result.append("  public static double classify(Object[] i) {\n");
-        id = 0;
-        result.append("    return node").append(id).append("(i);\n");
-        result.append("  }\n");
-        toSource(id, result);
-        result.append("}\n");
+            double[] classDistribution = new double[instances.numClasses()];
+            Enumeration instanceEnum = instances.enumerateInstances();
+            while (instanceEnum.hasMoreElements()) {
+                Instance instance = (Instance) instanceEnum.nextElement();
+                classDistribution[(int) instance.classValue()]++;
+            }
+            Utils.normalize(classDistribution);
+            int idxClass = Utils.maxIndex(classDistribution);
 
-        return result.toString();
+            int correctInstances = 0;
+            int incorrectInstances = 0;
+            Enumeration enumeration = instances.enumerateInstances();
+            while (enumeration.hasMoreElements()) {
+                Instance instance = (Instance) enumeration.nextElement();
+                if (instance.classValue() == classifyInstance(instance)) {
+                    correctInstances++;
+                } else {
+                    incorrectInstances++;
+                }
+            }
+            double afterPruningError = (double) incorrectInstances / (double) (correctInstances + incorrectInstances);
+            if (beforePruningError > afterPruningError) {
+                System.out.println("Pruning, behold the power");
+                child = null;
+                split_attribute = null;
+                leaf_class_idx = idxClass;
+                leaf_distribution = classDistribution;
+            }
+
+        }
+
     }
 }
